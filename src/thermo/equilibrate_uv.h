@@ -26,6 +26,20 @@ DISPATCH_MACRO bool is_depleted_cloud(T amount, T reference) {
          amount <= 8. * std::numeric_limits<T>::epsilon() * reference;
 }
 
+// NASA-9 row {low a0..a8, high a0..a8, Tmid}; none if Tmid is 0. Adds
+// R (h/R - T) to u and R (cp/R - 1) to cv; intEng_offset holds the constant.
+template <typename T>
+DISPATCH_MACRO void add_nasa9(double const* row, T t, T* u, T* cv) {
+  if (row == nullptr || row[18] <= 0.) return;
+  double const* a = t < row[18] ? row : row + 9;
+  *u += constants::Rgas *
+        (-a[0] / t + a[1] * log(t) + a[7] - t +
+         t * (a[2] +
+              t * (a[3] / 2 + t * (a[4] / 3 + t * (a[5] / 4 + t * a[6] / 5)))));
+  *cv += constants::Rgas * (a[0] / (t * t) + a[1] / t + a[2] - 1 +
+                            t * (a[3] + t * (a[4] + t * (a[5] + t * a[6]))));
+}
+
 template <typename T>
 DISPATCH_MACRO bool partition_uv_state(
     T temperature, T* conc, T const* baseline, T const* totals, T* molar_energy,
@@ -33,7 +47,8 @@ DISPATCH_MACRO bool partition_uv_state(
     T const* cv_const, user_func1 const* logsvp_func,
     user_func1 const* logsvp_func_ddT, int const* svp_kind,
     double const* svp_params, user_func2 const* intEng_R_extra,
-    user_func2 const* cv_R_extra, T* energy, T* derivative) {
+    user_func2 const* cv_R_extra, T* energy, T* derivative,
+    double const* nasa9) {
   memcpy(conc, baseline, nspecies * sizeof(T));
   for (int reaction_index = 0; reaction_index < nreaction; ++reaction_index) {
     int vapor_index = -1;
@@ -84,6 +99,8 @@ DISPATCH_MACRO bool partition_uv_state(
       molar_cv += cv_R_extra[species_index](temperature, conc[species_index]) *
                   constants::Rgas;
     }
+    add_nasa9(nasa9 ? nasa9 + 19 * species_index : nullptr, temperature,
+              &molar_energy[species_index], &molar_cv);
     *energy += molar_energy[species_index] * conc[species_index];
     *derivative += molar_cv * conc[species_index];
   }
@@ -126,7 +143,7 @@ DISPATCH_MACRO int equilibrate_uv_partition(
     user_func1 const* logsvp_func, user_func1 const* logsvp_func_ddT,
     int const* svp_kind, double const* svp_params,
     user_func2 const* intEng_R_extra, user_func2 const* cv_R_extra,
-    int* max_iter, int* nactive, char* work) {
+    int* max_iter, int* nactive, char* work, double const* nasa9) {
   size_t mark = pool_mark<Backend>(work);
   T* baseline = (T*)pmalloc<Backend>(work, nspecies * sizeof(T));
   T* molar_energy = (T*)pmalloc<Backend>(work, nspecies * sizeof(T));
@@ -164,10 +181,11 @@ DISPATCH_MACRO int equilibrate_uv_partition(
   T tolerance = 64. * std::numeric_limits<T>::epsilon() * energy_scale;
   int iterations = 1;
   if (valid) {
-    valid = partition_uv_state(
-        *temp, conc, baseline, totals, molar_energy, stoich, nspecies,
-        nreaction, intEng_offset, cv_const, logsvp_func, logsvp_func_ddT,
-        svp_kind, svp_params, intEng_R_extra, cv_R_extra, &energy, &derivative);
+    valid = partition_uv_state(*temp, conc, baseline, totals, molar_energy,
+                               stoich, nspecies, nreaction, intEng_offset,
+                               cv_const, logsvp_func, logsvp_func_ddT, svp_kind,
+                               svp_params, intEng_R_extra, cv_R_extra, &energy,
+                               &derivative, nasa9);
     residual = energy - h0;
     T terms = 0.;  // U ~ 0 near Tref: scale by the terms summed into it
     for (int i = 0; i < nspecies; ++i)
@@ -191,7 +209,7 @@ DISPATCH_MACRO int equilibrate_uv_partition(
                               stoich, nspecies, nreaction, intEng_offset,
                               cv_const, logsvp_func, logsvp_func_ddT, svp_kind,
                               svp_params, intEng_R_extra, cv_R_extra,
-                              &bracket_energy, &bracket_derivative))
+                              &bracket_energy, &bracket_derivative, nasa9))
         break;
       if (residual > 0.) {
         lower = candidate;
@@ -218,7 +236,7 @@ DISPATCH_MACRO int equilibrate_uv_partition(
           candidate, conc, baseline, totals, molar_energy, stoich, nspecies,
           nreaction, intEng_offset, cv_const, logsvp_func, logsvp_func_ddT,
           svp_kind, svp_params, intEng_R_extra, cv_R_extra, &energy,
-          &derivative);
+          &derivative, nasa9);
       if (!valid) break;
       current = candidate;
       residual = energy - h0;
@@ -297,7 +315,7 @@ DISPATCH_MACRO int equilibrate_uv(
     int const* svp_kind, double const* svp_params,
     user_func2 const* intEng_R_extra, user_func2 const* cv_R_extra,
     float logsvp_eps, int* max_iter, int* reaction_set, int* nactive,
-    int uv_solver = 0, char* work = nullptr) {
+    int uv_solver = 0, char* work = nullptr, double const* nasa9 = nullptr) {
   // check positive temperature
   if (*temp <= 0) {
     printf("Error: Non-positive temperature = %g.\n", *temp);
@@ -336,7 +354,7 @@ DISPATCH_MACRO int equilibrate_uv(
     int partition_status = equilibrate_uv_partition<T, Backend>(
         gain, diag, temp, conc, h0, stoich, nspecies, nreaction, intEng_offset,
         cv_const, logsvp_func, logsvp_func_ddT, svp_kind, svp_params,
-        intEng_R_extra, cv_R_extra, max_iter, nactive, work);
+        intEng_R_extra, cv_R_extra, max_iter, nactive, work, nasa9);
     if (partition_status == 0) return 0;
     if (uv_solver == 2) {
       printf("[Warning] equilibrate_uv partition did not converge.\n");
@@ -374,6 +392,8 @@ DISPATCH_MACRO int equilibrate_uv(
     if (cv_R_extra[i]) {
       intEng_ddT[i] += cv_R_extra[i](*temp, conc[i]) * constants::Rgas;
     }
+    add_nasa9(nasa9 ? nasa9 + 19 * i : nullptr, *temp, &intEng[i],
+              &intEng_ddT[i]);
   }
 
   int iter = 0;
@@ -585,6 +605,8 @@ DISPATCH_MACRO int equilibrate_uv(
         if (cv_R_extra[i]) {
           intEng_ddT[i] += cv_R_extra[i](*temp, conc[i]) * constants::Rgas;
         }
+        add_nasa9(nasa9 ? nasa9 + 19 * i : nullptr, *temp, &intEng[i],
+                  &intEng_ddT[i]);
         zh += intEng[i] * conc[i];
         zc += intEng_ddT[i] * conc[i];
       }

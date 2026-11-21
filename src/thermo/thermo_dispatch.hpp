@@ -16,13 +16,13 @@ using equilibrate_tp_fn = void (*)(at::TensorIterator& iter, int ngas,
                                    std::vector<std::string> const& logsvp_func,
                                    double logsvp_eps, int max_iter);
 
-using equilibrate_uv_fn =
-    void (*)(at::TensorIterator& iter, int ngas, at::Tensor const& stoich,
-             at::Tensor const& intEng_offset, at::Tensor const& cv_const,
-             at::Tensor const& svp_kind, at::Tensor const& svp_params,
-             std::vector<std::string> const& logsvp_func,
-             std::vector<std::string> const& intEng_extra_func,
-             double logsvp_eps, int max_iter, int uv_solver);
+using equilibrate_uv_fn = void (*)(
+    at::TensorIterator& iter, int ngas, at::Tensor const& stoich,
+    at::Tensor const& intEng_offset, at::Tensor const& cv_const,
+    at::Tensor const& svp_kind, at::Tensor const& svp_params,
+    std::vector<std::string> const& logsvp_func,
+    std::vector<std::string> const& intEng_extra_func, double logsvp_eps,
+    int max_iter, int uv_solver, at::Tensor const& nasa9);
 
 using logsvp_inline_fn = void (*)(at::TensorIterator& iter,
                                   at::Tensor const& svp_kind,

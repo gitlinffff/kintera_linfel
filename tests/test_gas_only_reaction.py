@@ -12,7 +12,7 @@ import torch
 from kintera import ThermoOptions, ThermoX, ThermoY, constants
 
 A, B, C = 6.5003, 24602.2, 37.0
-CARD = f"""reference-state: {{Tref: 0., Pref: 1.e5}}
+CARD = f"""reference-state: {{Tref: 0., Pref: 1.e5, use-nasa9-cp: %s}}
 species:
   - {{name: He, phase: gas, composition: {{He: 1}}, cv_R: 1.5}}
   - {{name: H2, phase: gas, composition: {{H: 2}}, cv_R: 2.5}}
@@ -28,9 +28,10 @@ def log_kp(temp):  # ln Kp [Pa]
     return math.log(1e5) + (A - B / (temp + C)) * math.log(10.)
 
 
+@pytest.mark.parametrize("nasa9", ["false", "true"])  # true: the solver sees NASA-9 u(T), cv(T)
 @pytest.mark.parametrize("device", DEVICES)
-def test_h2_dissociation_equilibrium(tmp_path, device):
-    (path := tmp_path / "h2diss.yaml").write_text(CARD)
+def test_h2_dissociation_equilibrium(tmp_path, device, nasa9):
+    (path := tmp_path / "h2diss.yaml").write_text(CARD % nasa9)
     dev, R = torch.device(device), constants.Rgas
     th = ThermoY(ThermoOptions.from_yaml(str(path)))
     th.to(dev)
@@ -48,6 +49,7 @@ def test_h2_dissociation_equilibrium(tmp_path, device):
     temp, c = th.compute("VU->T", [V, U]), V * inv_mu  # c [mol/m^3]
     res = 2 * torch.log(c[:, 2] * R * temp) - torch.log(c[:, 1] * R * temp) - log_kp(temp)
     assert int((diag < 0).sum()) == 0
+    assert ((th.compute("VT->U", [V, temp]) - U).abs() / U.abs()).max().item() <= 1e-12
     assert res.abs().max().item() <= 1e-5
     assert ((y1[0] + y1[1]) - (y[0] + y[1])).abs().max().item() <= 1e-14
     assert (c[:, 2] > 0).all()  # H appears

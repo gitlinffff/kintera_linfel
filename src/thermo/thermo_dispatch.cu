@@ -72,8 +72,10 @@ void call_equilibrate_uv_cuda(at::TensorIterator &iter, int ngas,
                              at::Tensor const& svp_params,
                              std::vector<std::string> const &logsvp_func,
                              std::vector<std::string> const &intEng_extra_func,
-                             double logsvp_eps, int max_iter, int uv_solver) {
+                             double logsvp_eps, int max_iter, int uv_solver,
+                             at::Tensor const& nasa9) {
   at::cuda::CUDAGuard device_guard(iter.device());
+  auto nasa9_ptr = nasa9.defined() ? nasa9.data_ptr<double>() : nullptr;
 
   /////  (1) Get svp functions   /////
   // Inline-parametrized columns are evaluated analytically in the kernel; swap
@@ -137,7 +139,7 @@ void call_equilibrate_uv_cuda(at::TensorIterator &iter, int ngas,
                        svp_kind_ptr, svp_params_ptr,
                        intEng_extra_ptrs, intEng_extra_ddT_ptrs,
                        logsvp_eps, &max_iter_i, reaction_set,
-                       nactive, uv_solver, work);
+                       nactive, uv_solver, work, nasa9_ptr);
       });
   });
 }

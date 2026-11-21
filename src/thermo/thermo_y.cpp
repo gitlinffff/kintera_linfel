@@ -350,6 +350,33 @@ torch::Tensor ThermoYImpl::forward(torch::Tensor rho, torch::Tensor intEng,
   auto cv_const = cv0 / inv_mu;      // J/(kg K) -> J/(mol K)
   auto intEng_extra = options->intEng_R_extra();
 
+  // use-nasa9-cp: the solver's u and cv follow eval_intEng_R (add_nasa9)
+  torch::Tensor nasa9;
+  if (options->use_nasa9_cp() && options->has_nasa9()) {
+    int ns = intEng_offset.size(0);
+    auto lo = options->nasa9_coeffs_low_tensor({}).narrow(0, 0, ns);
+    auto hi = options->nasa9_coeffs_high_tensor({}).narrow(0, 0, ns);
+    auto Tm = options->nasa9_Tmid_tensor({}).narrow(0, 0, ns) *
+              ((lo.abs().sum(-1) + hi.abs().sum(-1)) > 0);  // 0: no data
+    std::vector<double> off(ns, 0.);
+    for (int i = 0; i < ns; ++i) {
+      double t = kNasa9Tref, tm = Tm[i].item<double>();
+      auto a = (t < tm ? lo : hi)[i].contiguous();
+      auto c = a.data_ptr<double>();  // u(T0) - R (h(T0)/R - T0)
+      off[i] =
+          (options->uref_R()[i] + t * options->cref_R()[i] + c[0] / t -
+           c[1] * std::log(t) - c[7] + t -
+           t * (c[2] + t * (c[3] / 2 +
+                            t * (c[4] / 3 + t * (c[5] / 4 + t * c[6] / 5))))) *
+          constants::Rgas;
+    }
+    auto on = (Tm > 0).to(intEng_offset.device());
+    intEng_offset = torch::where(
+        on, torch::tensor(off, intEng_offset.options()), intEng_offset);
+    cv_const = torch::where(on, 0., cv_const);
+    nasa9 = torch::cat({lo, hi, Tm.unsqueeze(-1)}, -1).to(conc.device());
+  }
+
   // use_h2_cp: hand the solver the H2 energy of eval_intEng_R
   auto names = options->species();
   int h2 = std::find(names.begin(), names.end(), "H2") - names.begin();
@@ -359,6 +386,7 @@ torch::Tensor ThermoYImpl::forward(torch::Tensor rho, torch::Tensor intEng,
         constants::Rgas;
     cv_const[h2] = 0.;
     intEng_extra[h2] = "h2_rot_" + options->h2_cp_mode();
+    if (nasa9.defined()) nasa9[h2][18] = 0.;  // h2_rot wins, as in eval_uhs
   }
 
   // call the equilibrium solver
@@ -368,7 +396,7 @@ torch::Tensor ThermoYImpl::forward(torch::Tensor rho, torch::Tensor intEng,
       conc.device().type(), iter, options->vapor_ids().size(), stoich,
       intEng_offset, cv_const, svp_spec.first, svp_spec.second,
       options->nucleation()->logsvp(), intEng_extra, options->ftol(),
-      options->max_iter(), uv_solver);
+      options->max_iter(), uv_solver, nasa9);
 
   // Keep the failure count on the same device as the cells. forward does
   // not sync. On CPU the count is already on the host, so warn here. On
