@@ -114,16 +114,16 @@ void ThermoXImpl::reset() {
   if (options->nucleation()) {
     auto s = stoich.accessor<double, 2>();
     for (int j = 0; j < reactions.size(); ++j) {
-      bool cloud = false;
+      bool product = false;  // gas or condensed: 2 H <=> H2 is admitted
       for (int i = 0; i < nspecies; ++i) {
         if (i < options->vapor_ids().size()) {
           if (s[i][j] > 0.) options->nucleation()->has_gas_products = true;
         } else {
           TORCH_CHECK(s[i][j] >= 0., "Nucleation requires gaseous reactants");
-          cloud |= s[i][j] > 0.;
         }
+        product |= s[i][j] > 0.;
       }
-      TORCH_CHECK(cloud, "Nucleation requires a condensed product");
+      TORCH_CHECK(product, "Nucleation requires a product");
     }
   }
 
